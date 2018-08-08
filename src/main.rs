@@ -22,17 +22,17 @@ impl Counts {
         }
     }
 
-    fn display(&self, mut w: impl Write, filename: &str, show_bytes: bool, show_lines: bool, show_words: bool) -> Result<(), Error> {
+    fn display(&self, mut w: impl Write, filename: &str, opt: &Options) -> Result<(), Error> {
         let mut res = String::new();
-        if show_lines {
+        if opt.show_lines {
             res.push(' ');
             res.push_str(self.line_count.to_string().as_str());
         }
-        if show_words {
+        if opt.show_words {
             res.push(' ');
             res.push_str(self.word_count.to_string().as_str());
         }
-        if show_bytes {
+        if opt.show_bytes {
             res.push(' ');
             res.push_str(self.byte_count.to_string().as_str());
         }
@@ -53,7 +53,7 @@ fn c_iswspace(c: u8) -> bool {
         (0x09 <= c && c <= 0x0D)
 }
 
-fn count_file(filename: &str, counts: &mut Counts, show_lines: bool, show_words: bool) -> Result<(), Error> {
+fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> Result<(), Error> {
     let sin = stdin();
     let mut reader: Box<Read> = if filename == "-" {
         Box::new(sin.lock())
@@ -68,10 +68,10 @@ fn count_file(filename: &str, counts: &mut Counts, show_lines: bool, show_words:
     while {read = reader.read(&mut buff[..])?; read > 0} {
         for byte in &buff[0..read] {
             counts.byte_count += 1;
-            if show_lines && *byte == b'\n' {
+            if opt.show_lines && *byte == b'\n' {
                 counts.line_count += 1;
             }
-            if show_words {
+            if opt.show_words {
                 let is_whitespace = c_iswspace(*byte);
                 if in_a_word && is_whitespace {
                     counts.word_count += 1;
@@ -83,6 +83,28 @@ fn count_file(filename: &str, counts: &mut Counts, show_lines: bool, show_words:
         }
     }
     Ok(())
+}
+
+struct Options {
+    show_bytes: bool,
+    show_words: bool,
+    show_lines: bool,
+}
+
+impl Options {
+    fn new(show_bytes: bool, show_words: bool, show_lines: bool) -> Self {
+        Options{
+            show_words,
+            show_bytes,
+            show_lines,
+        }
+    }
+
+    fn set_default_options(&mut self) {
+        self.show_lines = true;
+        self.show_words = true;
+        self.show_bytes = true;
+    }
 }
 
 fn main() {
@@ -110,25 +132,22 @@ fn main() {
             .multiple(true)
             .long("FILE"))
         .get_matches();
-    let mut show_bytes = matches.is_present("bytes");
-    let mut show_lines = matches.is_present("lines");
-    let mut show_words = matches.is_present("words");
-
-    if !show_words && !show_lines && !show_bytes {
-        show_lines = true;
-        show_words = true;
-        show_bytes = true;
+    let mut options = Options::new(matches.is_present("bytes"),
+                                   matches.is_present("words"),
+                                   matches.is_present("lines"));
+    if !options.show_words && !options.show_lines && !options.show_bytes {
+        options.set_default_options();
     }
 
     let files: Vec<&str> = matches.values_of("files").unwrap().collect();
     for file in files.into_iter() {
         let mut counts = Counts::new();
-        if let Err(e) = count_file(file, &mut counts, show_lines, show_words) {
+        if let Err(e) = count_file(file, &mut counts, &options) {
             writeln!(stderr(), "{}", e);
             stderr().flush().expect("error writing error to stderr");
             return;
         }
-        if let Err(e) = counts.display(stdout(), file, show_bytes, show_lines, show_words) {
+        if let Err(e) = counts.display(stdout(), file, &options) {
             writeln!(stderr(), "{}", e);
             stderr().flush().expect("error writing error to stderr");
             return;
