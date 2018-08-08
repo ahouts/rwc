@@ -2,7 +2,7 @@
 extern crate clap;
 
 use clap::{Arg, App};
-use std::io::{Read, BufReader, stdin, Error, stdout, stderr, Write};
+use std::io::{Read, stdin, Error, stdout, stderr, Write};
 use std::path::Path;
 use std::fs::{File};
 
@@ -22,25 +22,23 @@ impl Counts {
         }
     }
 
-    fn display(&self, mut w: impl Write, show_bytes: bool, show_lines: bool, show_words: bool) -> Result<(), Error> {
+    fn display(&self, mut w: impl Write, filename: &str, show_bytes: bool, show_lines: bool, show_words: bool) -> Result<(), Error> {
         let mut res = String::new();
-        let mut need_tab = false;
         if show_lines {
+            res.push(' ');
             res.push_str(self.line_count.to_string().as_str());
-            need_tab = true;
         }
         if show_words {
-            if need_tab {
-                res.push('\t');
-            }
+            res.push(' ');
             res.push_str(self.word_count.to_string().as_str());
-            need_tab = true;
         }
         if show_bytes {
-            if need_tab {
-                res.push('\t');
-            }
+            res.push(' ');
             res.push_str(self.byte_count.to_string().as_str());
+        }
+        if filename != "-" {
+            res.push(' ');
+            res.push_str(filename);
         }
         res.push('\n');
         w.write_all(res.as_bytes())?;
@@ -49,49 +47,41 @@ impl Counts {
     }
 }
 
-fn get_reader_for_file(mut filename: &str) -> Result<Box<Read>, Error> {
-    filename = filename.trim();
-    if filename == "-" {
-        return Ok(Box::new(stdin()));
-    } else {
-        let p = Path::new(filename);
-        let f = File::open(p)?;
-        return Ok(Box::new(f));
-    }
+fn c_iswspace(c: u8) -> bool {
+    c == b' ' ||
+        // horizontal tab, line feed, vertical tab, form feed, and carriage return
+        (0x09 <= c && c <= 0x0D)
 }
 
 fn count_file(filename: &str, counts: &mut Counts, show_lines: bool, show_words: bool) -> Result<(), Error> {
-    let reader = get_reader_for_file(filename)?;
-    let reader = BufReader::new(reader);
-    let mut byte_count: usize = 0;
-    let mut bytes = reader.bytes().map(|c| {
-        byte_count += 1;
-        c
-    });
-    let mut line_count: usize = 0;
-    if show_lines {
-        bytes = bytes.map(|c| {
-            if c? == b'\n' {
-                line_count += 1;
+    let sin = stdin();
+    let mut reader: Box<Read> = if filename == "-" {
+        Box::new(sin.lock())
+    } else {
+        let p = Path::new(filename);
+        let f = File::open(p)?;
+        Box::new(f)
+    };
+    let mut buff: Vec<u8> = vec![0; 8096];
+    let mut in_a_word = false;
+    let mut read: usize;
+    while {read = reader.read(&mut buff[..])?; read > 0} {
+        for byte in &buff[0..read] {
+            counts.byte_count += 1;
+            if show_lines && *byte == b'\n' {
+                counts.line_count += 1;
             }
-            c
-        })
+            if show_words {
+                let is_whitespace = c_iswspace(*byte);
+                if in_a_word && is_whitespace {
+                    counts.word_count += 1;
+                }
+                if !in_a_word && !is_whitespace {
+                    in_a_word = true;
+                }
+            }
+        }
     }
-    let mut word_count: usize = 0;
-    if show_words {
-        let mut in_a_word = false;
-        bytes = bytes.map(|c| {
-            let is_whitespace = (c?).is_ascii_whitespace();
-            if in_a_word && is_whitespace {
-                word_count += 1;
-            }
-            if !in_a_word && !is_whitespace {
-                in_a_word = true;
-            }
-            c
-        })
-    }
-    bytes.for_each(|| {})
     Ok(())
 }
 
@@ -131,17 +121,17 @@ fn main() {
     }
 
     let files: Vec<&str> = matches.values_of("files").unwrap().collect();
-    let mut counts = Counts::new();
     for file in files.into_iter() {
+        let mut counts = Counts::new();
         if let Err(e) = count_file(file, &mut counts, show_lines, show_words) {
             writeln!(stderr(), "{}", e);
             stderr().flush().expect("error writing error to stderr");
             return;
         }
-    }
-    if let Err(e) = counts.display(stdout(), show_bytes, show_lines, show_words) {
-        writeln!(stderr(), "{}", e);
-        stderr().flush().expect("error writing error to stderr");
-        return;
+        if let Err(e) = counts.display(stdout(), file, show_bytes, show_lines, show_words) {
+            writeln!(stderr(), "{}", e);
+            stderr().flush().expect("error writing error to stderr");
+            return;
+        }
     }
 }
