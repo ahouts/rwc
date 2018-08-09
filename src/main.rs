@@ -247,7 +247,7 @@ fn main() {
         let (filename, counts) = match res {
             Ok(r) => r,
             Err(e) => {
-                writeln!(stderr(), "{}", e);
+                writeln!(stderr(), "{}", e).expect("error writing error to stderr");
                 stderr().flush().expect("error writing error to stderr");
                 return;
             },
@@ -255,7 +255,7 @@ fn main() {
         let sout = stdout();
         let mut sout_lock = sout.lock();
         if let Err(e) = counts.display(&mut sout_lock, filename.as_str(), &options) {
-            writeln!(stderr(), "{}", e);
+            writeln!(stderr(), "{}", e).expect("error writing error to stderr");
             stderr().flush().expect("error writing error to stderr");
             return;
         }
