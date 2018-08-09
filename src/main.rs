@@ -1,12 +1,15 @@
 #[macro_use]
 extern crate clap;
 extern crate utf8;
+extern crate rayon;
 
 use clap::{Arg, App};
 use utf8::BufReadDecoder;
-use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Result, Stdin};
+use rayon::prelude::*;
+use std::io;
+use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Stdin};
 use std::path::Path;
-use std::fs::{File};
+use std::fs::File;
 
 #[derive(Debug)]
 struct Counts {
@@ -26,37 +29,37 @@ impl Counts {
         }
     }
 
-    fn display<'a>(&self, w: &'a mut Write, filename: &str, opt: &Options) -> Result<()> {
+    fn display<'a>(&self, w: &'a mut Write, filename: &str, opt: &Options) -> io::Result<()> {
         let mut res = String::new();
-        let mut tab_needed = false;
+        let mut space_needed = false;
         if opt.show_lines {
             res.push_str(self.line_count.to_string().as_str());
-            tab_needed = true;
+            space_needed = true;
         }
         if opt.show_words {
-            if tab_needed {
-                res.push('\t');
+            if space_needed {
+                res.push(' ');
             }
             res.push_str(self.word_count.to_string().as_str());
-            tab_needed = true;
+            space_needed = true;
         }
         if opt.show_bytes {
-            if tab_needed {
-                res.push('\t');
+            if space_needed {
+                res.push(' ');
             }
             res.push_str(self.byte_count.to_string().as_str());
-            tab_needed = true;
+            space_needed = true;
         }
         if opt.show_chars {
-            if tab_needed {
-                res.push('\t');
+            if space_needed {
+                res.push(' ');
             }
             res.push_str(self.char_count.to_string().as_str());
-            tab_needed = true;
+            space_needed = true;
         }
         if filename != "-" {
-            if tab_needed {
-                res.push('\t');
+            if space_needed {
+                res.push(' ');
             }
             res.push_str(filename);
         }
@@ -97,7 +100,7 @@ impl From<Stdin> for Reader {
     }
 }
 
-fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> Result<()> {
+fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> io::Result<()> {
     let mut utf_reader = BufReadDecoder::new(r.get_buff_reader());
     let mut in_a_word = false;
     while let Some(s) = utf_reader.next_lossy() {
@@ -122,7 +125,7 @@ fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> Result<()>
     Ok(())
 }
 
-fn read_as_bytes(mut r: Reader, counts: &mut Counts, cfg: &Options) -> Result<()> {
+fn read_as_bytes(mut r: Reader, counts: &mut Counts, cfg: &Options) -> io::Result<()> {
     let mut reader = r.get_buff_reader();
     loop {
         let bytes_read;
@@ -146,7 +149,7 @@ fn read_as_bytes(mut r: Reader, counts: &mut Counts, cfg: &Options) -> Result<()
     Ok(())
 }
 
-fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> Result<()> {
+fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> io::Result<()> {
     let reader= if filename == "-" {
         Reader::from(stdin())
     } else {
@@ -161,6 +164,7 @@ fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> Result<()> 
     }
 }
 
+#[derive(Clone)]
 struct Options {
     show_bytes: bool,
     show_words: bool,
@@ -195,7 +199,11 @@ fn main() {
     let matches = App::new("rwc")
         .version(crate_version!())
         .author("Andrew Houts <ahouts4@gmail.com>")
-        .about("print newline, word, and byte counts for each file")
+        .about("print newline, word, and byte counts for each file.")
+        .long_about("print newline, word, and byte counts for each file.\n\nWhen no flags \
+        are set; lines, chars, and bytes will be selected by default. The results will \
+        be displayed in the following order:\n\n<line count> <word count> <byte count> <char count> \
+        <file>")
         .arg(Arg::with_name("bytes")
             .short("c")
             .long("bytes")
@@ -213,7 +221,7 @@ fn main() {
             .short("w")
             .long("words"))
         .arg(Arg::with_name("files")
-            .help("FILES to read from.\nWith no FILES, or when a FILE is -, read standard input.")
+            .help("FILES to read from. When a file is \"-\", read standard input.")
             .default_value("-")
             .index(1)
             .takes_value(true)
@@ -225,20 +233,31 @@ fn main() {
                                    matches.is_present("lines"),
                                    matches.is_present("chars"));
 
-    let files: Vec<&str> = matches.values_of("files").unwrap().collect();
-    for file in files.into_iter() {
+    let files: Vec<String> = matches.values_of("files")
+        .unwrap()
+        .map(|f| String::from(f))
+        .collect();
+
+    files.into_par_iter().map(|file: String| {
+        let options = options.clone();
         let mut counts = Counts::new();
-        if let Err(e) = count_file(file, &mut counts, &options) {
-            writeln!(stderr(), "{}", e);
-            stderr().flush().expect("error writing error to stderr");
-            return;
-        }
+        count_file(file.as_ref(), &mut counts, &options)?;
+        Ok((file, counts))
+    }).for_each(|res: io::Result<(String, Counts)>| {
+        let (filename, counts) = match res {
+            Ok(r) => r,
+            Err(e) => {
+                writeln!(stderr(), "{}", e);
+                stderr().flush().expect("error writing error to stderr");
+                return;
+            },
+        };
         let sout = stdout();
         let mut sout_lock = sout.lock();
-        if let Err(e) = counts.display(&mut sout_lock, file, &options) {
+        if let Err(e) = counts.display(&mut sout_lock, filename.as_str(), &options) {
             writeln!(stderr(), "{}", e);
             stderr().flush().expect("error writing error to stderr");
             return;
         }
-    }
+    });
 }
