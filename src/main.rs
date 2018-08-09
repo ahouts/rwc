@@ -4,7 +4,7 @@ extern crate utf8;
 
 use clap::{Arg, App};
 use utf8::BufReadDecoder;
-use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Result};
+use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Result, Stdin};
 use std::path::Path;
 use std::fs::{File};
 
@@ -26,7 +26,7 @@ impl Counts {
         }
     }
 
-    fn display(&self, mut w: impl Write, filename: &str, opt: &Options) -> Result<()> {
+    fn display<'a>(&self, w: &'a mut Write, filename: &str, opt: &Options) -> Result<()> {
         let mut res = String::new();
         let mut tab_needed = false;
         if opt.show_lines {
@@ -67,8 +67,38 @@ impl Counts {
     }
 }
 
-fn read_as_utf8(r: Box<BufRead>, counts: &mut Counts, opt: &Options) -> Result<()> {
-    let mut utf_reader = BufReadDecoder::new(r);
+enum Reader{
+    Stdin(Stdin),
+    File(File),
+}
+
+impl Reader{
+    fn get_buff_reader<'a>(&'a mut self) -> Box<BufRead + 'a> {
+        match self {
+            Reader::Stdin(s) => {
+                Box::new(s.lock())
+            },
+            Reader::File(f) => {
+                Box::new(BufReader::new(f))
+            }
+        }
+    }
+}
+
+impl From<File> for Reader {
+    fn from(f: File) -> Self {
+        Reader::File(f)
+    }
+}
+
+impl From<Stdin> for Reader {
+    fn from(s: Stdin) -> Self {
+        Reader::Stdin(s)
+    }
+}
+
+fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> Result<()> {
+    let mut utf_reader = BufReadDecoder::new(r.get_buff_reader());
     let mut in_a_word = false;
     while let Some(s) = utf_reader.next_lossy() {
         let s: &str = s?;
@@ -92,36 +122,37 @@ fn read_as_utf8(r: Box<BufRead>, counts: &mut Counts, opt: &Options) -> Result<(
     Ok(())
 }
 
-fn read_as_bytes(mut r: Box<BufRead>, counts: &mut Counts, _: &Options) -> Result<()> {
-    let r_mut = r.as_mut();
+fn read_as_bytes(mut r: Reader, counts: &mut Counts, cfg: &Options) -> Result<()> {
+    let mut reader = r.get_buff_reader();
     loop {
         let bytes_read;
         {
-            let buf = r_mut.fill_buf()?;
+            let buf = reader.fill_buf()?;
             bytes_read = buf.len();
             if bytes_read == 0 {
                 break;
             }
-            for byte in buf {
-                if *byte == b'\n' {
-                    counts.line_count += 1;
+            if cfg.show_lines {
+                for byte in buf {
+                    if *byte == b'\n' {
+                        counts.line_count += 1;
+                    }
                 }
             }
         }
         counts.byte_count += bytes_read;
-        r_mut.consume(bytes_read);
+        reader.consume(bytes_read);
     }
     Ok(())
 }
 
 fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> Result<()> {
-    let sin = stdin();
-    let reader: Box<BufRead> = if filename == "-" {
-        Box::new(sin.lock())
+    let reader= if filename == "-" {
+        Reader::from(stdin())
     } else {
         let p = Path::new(filename);
         let f = File::open(p)?;
-        Box::new(BufReader::new(f))
+        Reader::from(f)
     };
     if opt.utf_required {
         return read_as_utf8(reader, counts, opt);
@@ -202,7 +233,9 @@ fn main() {
             stderr().flush().expect("error writing error to stderr");
             return;
         }
-        if let Err(e) = counts.display(stdout(), file, &options) {
+        let sout = stdout();
+        let mut sout_lock = sout.lock();
+        if let Err(e) = counts.display(&mut sout_lock, file, &options) {
             writeln!(stderr(), "{}", e);
             stderr().flush().expect("error writing error to stderr");
             return;
