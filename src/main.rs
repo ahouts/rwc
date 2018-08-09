@@ -1,8 +1,10 @@
 #[macro_use]
 extern crate clap;
+extern crate utf8;
 
 use clap::{Arg, App};
-use std::io::{Read, stdin, Error, stdout, stderr, Write};
+use utf8::BufReadDecoder;
+use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Result};
 use std::path::Path;
 use std::fs::{File};
 
@@ -10,7 +12,8 @@ use std::fs::{File};
 struct Counts {
     word_count: usize,
     line_count: usize,
-    byte_count: usize
+    byte_count: usize,
+    char_count: usize,
 }
 
 impl Counts {
@@ -18,26 +21,43 @@ impl Counts {
         Counts{
             word_count: 0,
             line_count: 0,
-            byte_count: 0
+            byte_count: 0,
+            char_count: 0,
         }
     }
 
-    fn display(&self, mut w: impl Write, filename: &str, opt: &Options) -> Result<(), Error> {
+    fn display(&self, mut w: impl Write, filename: &str, opt: &Options) -> Result<()> {
         let mut res = String::new();
+        let mut tab_needed = false;
         if opt.show_lines {
-            res.push(' ');
             res.push_str(self.line_count.to_string().as_str());
+            tab_needed = true;
         }
         if opt.show_words {
-            res.push(' ');
+            if tab_needed {
+                res.push('\t');
+            }
             res.push_str(self.word_count.to_string().as_str());
+            tab_needed = true;
         }
         if opt.show_bytes {
-            res.push(' ');
+            if tab_needed {
+                res.push('\t');
+            }
             res.push_str(self.byte_count.to_string().as_str());
+            tab_needed = true;
+        }
+        if opt.show_chars {
+            if tab_needed {
+                res.push('\t');
+            }
+            res.push_str(self.char_count.to_string().as_str());
+            tab_needed = true;
         }
         if filename != "-" {
-            res.push(' ');
+            if tab_needed {
+                res.push('\t');
+            }
             res.push_str(filename);
         }
         res.push('\n');
@@ -47,63 +67,96 @@ impl Counts {
     }
 }
 
-fn c_iswspace(c: u8) -> bool {
-    c == b' ' ||
-        // horizontal tab, line feed, vertical tab, form feed, and carriage return
-        (0x09 <= c && c <= 0x0D)
-}
-
-fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> Result<(), Error> {
-    let sin = stdin();
-    let mut reader: Box<Read> = if filename == "-" {
-        Box::new(sin.lock())
-    } else {
-        let p = Path::new(filename);
-        let f = File::open(p)?;
-        Box::new(f)
-    };
-    let mut buff: Vec<u8> = vec![0; 8096];
+fn read_as_utf8(r: Box<BufRead>, counts: &mut Counts, opt: &Options) -> Result<()> {
+    let mut utf_reader = BufReadDecoder::new(r);
     let mut in_a_word = false;
-    let mut read: usize;
-    while {read = reader.read(&mut buff[..])?; read > 0} {
-        for byte in &buff[0..read] {
-            counts.byte_count += 1;
-            if opt.show_lines && *byte == b'\n' {
+    while let Some(s) = utf_reader.next_lossy() {
+        let s: &str = s?;
+        for c in s.chars() {
+            if opt.show_bytes {
+                counts.byte_count += c.len_utf8();
+            }
+            counts.char_count += 1;
+            if opt.show_lines && c == '\n' {
                 counts.line_count += 1;
             }
             if opt.show_words {
-                let is_whitespace = c_iswspace(*byte);
+                let is_whitespace = c.is_ascii_whitespace();
                 if in_a_word && is_whitespace {
                     counts.word_count += 1;
                 }
-                if !in_a_word && !is_whitespace {
-                    in_a_word = true;
-                }
+                in_a_word = !is_whitespace;
             }
         }
     }
     Ok(())
 }
 
+fn read_as_bytes(mut r: Box<BufRead>, counts: &mut Counts, _: &Options) -> Result<()> {
+    let r_mut = r.as_mut();
+    loop {
+        let bytes_read;
+        {
+            let buf = r_mut.fill_buf()?;
+            bytes_read = buf.len();
+            if bytes_read == 0 {
+                break;
+            }
+            for byte in buf {
+                if *byte == b'\n' {
+                    counts.line_count += 1;
+                }
+            }
+        }
+        counts.byte_count += bytes_read;
+        r_mut.consume(bytes_read);
+    }
+    Ok(())
+}
+
+fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> Result<()> {
+    let sin = stdin();
+    let reader: Box<BufRead> = if filename == "-" {
+        Box::new(sin.lock())
+    } else {
+        let p = Path::new(filename);
+        let f = File::open(p)?;
+        Box::new(BufReader::new(f))
+    };
+    if opt.utf_required {
+        return read_as_utf8(reader, counts, opt);
+    } else {
+        return read_as_bytes(reader, counts, opt);
+    }
+}
+
 struct Options {
     show_bytes: bool,
     show_words: bool,
     show_lines: bool,
+    show_chars: bool,
+    utf_required: bool,
 }
 
 impl Options {
-    fn new(show_bytes: bool, show_words: bool, show_lines: bool) -> Self {
-        Options{
-            show_words,
-            show_bytes,
-            show_lines,
+    fn new(show_bytes: bool, show_words: bool, show_lines: bool, show_chars: bool) -> Self {
+        if !show_words && !show_lines && !show_bytes && !show_chars {
+            Options{
+                show_words: true,
+                show_bytes: true,
+                show_lines: true,
+                show_chars: false,
+                utf_required: true,
+            }
+        } else {
+            Options {
+                show_words,
+                show_bytes,
+                show_lines,
+                show_chars,
+                utf_required: show_words || show_chars,
+            }
         }
-    }
-
-    fn set_default_options(&mut self) {
-        self.show_lines = true;
-        self.show_words = true;
-        self.show_bytes = true;
     }
 }
 
@@ -116,6 +169,10 @@ fn main() {
             .short("c")
             .long("bytes")
             .help("print the byte counts"))
+        .arg(Arg::with_name("chars")
+            .short("m")
+            .long("chars")
+            .help("print the character counts"))
         .arg(Arg::with_name("lines")
             .help("print the newline counts")
             .short("l")
@@ -132,12 +189,10 @@ fn main() {
             .multiple(true)
             .long("FILE"))
         .get_matches();
-    let mut options = Options::new(matches.is_present("bytes"),
+    let options = Options::new(matches.is_present("bytes"),
                                    matches.is_present("words"),
-                                   matches.is_present("lines"));
-    if !options.show_words && !options.show_lines && !options.show_bytes {
-        options.set_default_options();
-    }
+                                   matches.is_present("lines"),
+                                   matches.is_present("chars"));
 
     let files: Vec<&str> = matches.values_of("files").unwrap().collect();
     for file in files.into_iter() {

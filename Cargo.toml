@@ -5,3 +5,4 @@ authors = ["ahouts <ahouts4@gmail.com>"]
 
 [dependencies]
 clap = "2.32.0"
+utf-8 = "0.7.4"
