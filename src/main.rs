@@ -2,10 +2,12 @@
 extern crate clap;
 extern crate utf8;
 extern crate rayon;
+extern crate glob;
 
 use clap::{Arg, App};
 use utf8::BufReadDecoder;
 use rayon::prelude::*;
+use glob::glob;
 use std::io;
 use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Stdin};
 use std::path::Path;
@@ -21,7 +23,7 @@ struct Counts {
 
 impl Counts {
     fn new() -> Self {
-        Counts{
+        Counts {
             word_count: 0,
             line_count: 0,
             byte_count: 0,
@@ -70,17 +72,17 @@ impl Counts {
     }
 }
 
-enum Reader{
+enum Reader {
     Stdin(Stdin),
     File(File),
 }
 
-impl Reader{
+impl Reader {
     fn get_buff_reader<'a>(&'a mut self) -> Box<BufRead + 'a> {
         match self {
             Reader::Stdin(s) => {
                 Box::new(s.lock())
-            },
+            }
             Reader::File(f) => {
                 Box::new(BufReader::new(f))
             }
@@ -150,7 +152,7 @@ fn read_as_bytes(mut r: Reader, counts: &mut Counts, cfg: &Options) -> io::Resul
 }
 
 fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> io::Result<()> {
-    let reader= if filename == "-" {
+    let reader = if filename == "-" {
         Reader::from(stdin())
     } else {
         let p = Path::new(filename);
@@ -176,7 +178,7 @@ struct Options {
 impl Options {
     fn new(show_bytes: bool, show_words: bool, show_lines: bool, show_chars: bool) -> Self {
         if !show_words && !show_lines && !show_bytes && !show_chars {
-            Options{
+            Options {
                 show_words: true,
                 show_bytes: true,
                 show_lines: true,
@@ -229,35 +231,65 @@ fn main() {
             .long("FILE"))
         .get_matches();
     let options = Options::new(matches.is_present("bytes"),
-                                   matches.is_present("words"),
-                                   matches.is_present("lines"),
-                                   matches.is_present("chars"));
+                               matches.is_present("words"),
+                               matches.is_present("lines"),
+                               matches.is_present("chars"));
 
-    let files: Vec<String> = matches.values_of("files")
-        .unwrap()
-        .map(|f| String::from(f))
+    let file_globs: Vec<&str> = matches.values_of("files")
+        .expect("error reading files")
         .collect();
-
-    files.into_par_iter().map(|file: String| {
-        let options = options.clone();
-        let mut counts = Counts::new();
-        count_file(file.as_ref(), &mut counts, &options)?;
-        Ok((file, counts))
-    }).for_each(|res: io::Result<(String, Counts)>| {
-        let (filename, counts) = match res {
-            Ok(r) => r,
-            Err(e) => {
+    let file_iters: Vec<Box<Iterator<Item = String> + Send>> = file_globs.into_par_iter()
+        .map(|f| -> Box<Iterator<Item = String> + Send> {
+            if f == "-" {
+                return Box::new(std::iter::once(String::from(f)));
+            }
+            let g = match glob(f) {
+                Err(e) => {
+                    writeln!(stderr(), "{}", e).expect("error writing error to stderr");
+                    stderr().flush().expect("error writing error to stderr");
+                    return Box::new(std::iter::empty());
+                }
+                Ok(g) => g,
+            };
+            Box::new(g.filter_map(|entry| -> Option<String> {
+                match entry {
+                    Ok(path) => {
+                        Some(String::from(path.to_str().expect("error reading path")))
+                    }
+                    Err(e) => {
+                        writeln!(stderr(), "{}", e).expect("error writing error to stderr");
+                        stderr().flush().expect("error writing error to stderr");
+                        None
+                    }
+                }
+            }))
+        }).collect();
+    let files: Vec<String> = file_iters.into_iter()
+        .flat_map(|x| x)
+        .collect();
+    files
+        .into_par_iter()
+        .map(|file: String| {
+            let options = options.clone();
+            let mut counts = Counts::new();
+            count_file(file.as_ref(), &mut counts, &options)?;
+            Ok((file, counts))
+        })
+        .for_each(|res: io::Result<(String, Counts)>| {
+            let (filename, counts) = match res {
+                Ok(r) => r,
+                Err(e) => {
+                    writeln!(stderr(), "{}", e).expect("error writing error to stderr");
+                    stderr().flush().expect("error writing error to stderr");
+                    return;
+                }
+            };
+            let sout = stdout();
+            let mut sout_lock = sout.lock();
+            if let Err(e) = counts.display(&mut sout_lock, filename.as_str(), &options) {
                 writeln!(stderr(), "{}", e).expect("error writing error to stderr");
                 stderr().flush().expect("error writing error to stderr");
                 return;
-            },
-        };
-        let sout = stdout();
-        let mut sout_lock = sout.lock();
-        if let Err(e) = counts.display(&mut sout_lock, filename.as_str(), &options) {
-            writeln!(stderr(), "{}", e).expect("error writing error to stderr");
-            stderr().flush().expect("error writing error to stderr");
-            return;
-        }
-    });
+            }
+        });
 }

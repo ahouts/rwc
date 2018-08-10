@@ -7,3 +7,4 @@ authors = ["ahouts <ahouts4@gmail.com>"]
 clap = "2.32.0"
 utf-8 = "0.7.4"
 rayon = "1.0.2"
+glob = "0.2"
