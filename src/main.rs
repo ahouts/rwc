@@ -38,7 +38,7 @@ impl Counts {
         if self.is_a_directory && opt.show_dirs {
             w.write_all(format!("dir {}\n", filename).as_bytes())?;
             w.flush()?;
-            return Ok(())
+            return Ok(());
         }
         let mut res = String::new();
         let mut space_needed = false;
@@ -169,7 +169,7 @@ fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> io::Result<
             Reader::from(f)
         } else {
             counts.is_a_directory = true;
-            return Ok(())
+            return Ok(());
         }
     };
     if opt.utf_required {
@@ -255,7 +255,7 @@ fn main() {
         matches.is_present("words"),
         matches.is_present("lines"),
         matches.is_present("chars"),
-        matches.is_present("dirs")
+        matches.is_present("dirs"),
     );
 
     let file_globs: Vec<&str> = matches
@@ -263,9 +263,33 @@ fn main() {
         .expect("error reading files")
         .collect();
     let (result_sender, result_receiver) = channel::<io::Result<(String, Counts)>>();
+    spawn({
+        let options= options.clone();
+        move || {
+            result_receiver
+                .into_iter()
+                .for_each(|res| {
+                    let (filename, counts) = match res {
+                        Ok(r) => r,
+                        Err(e) => {
+                            writeln!(stderr(), "{}", e).expect("error writing error to stderr");
+                            stderr().flush().expect("error writing error to stderr");
+                            return;
+                        }
+                    };
+                    let sout = stdout();
+                    let mut sout_lock = sout.lock();
+                    if let Err(e) = counts.display(&mut sout_lock, filename.as_str(), &options) {
+                        writeln!(stderr(), "{}", e).expect("error writing error to stderr");
+                        stderr().flush().expect("error writing error to stderr");
+                        return;
+                    }
+                });
+        }
+    });
     file_globs
         .into_iter()
-        .map(|f| -> Box<Iterator<Item = String> + Send> {
+        .map(|f| -> Box<Iterator<Item=String> + Send> {
             if f == "-" {
                 return Box::new(std::iter::once(String::from(f)));
             }
@@ -290,7 +314,7 @@ fn main() {
                 }
             }))
         })
-        .flat_map(|x|  x)
+        .flat_map(|x| x)
         .for_each(|file: String| {
             let options = options.clone();
             let result_sender = result_sender.clone();
@@ -306,23 +330,4 @@ fn main() {
     // get rid of our sending channel
     // receive channel iterator ends once all senders go out of scope
     move || result_sender;
-    result_receiver
-        .into_iter()
-        .for_each(|res| {
-            let (filename, counts) = match res {
-                Ok(r) => r,
-                Err(e) => {
-                    writeln!(stderr(), "{}", e).expect("error writing error to stderr");
-                    stderr().flush().expect("error writing error to stderr");
-                    return;
-                }
-            };
-            let sout = stdout();
-            let mut sout_lock = sout.lock();
-            if let Err(e) = counts.display(&mut sout_lock, filename.as_str(), &options) {
-                writeln!(stderr(), "{}", e).expect("error writing error to stderr");
-                stderr().flush().expect("error writing error to stderr");
-                return;
-            }
-        });
 }
