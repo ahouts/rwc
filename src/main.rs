@@ -22,7 +22,6 @@ use counts::Counts;
 use options::Options;
 use reader::Reader;
 
-
 fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> io::Result<()> {
     let mut utf_reader = BufReadDecoder::new(r.get_buff_reader());
     let mut in_a_word = false;
@@ -95,7 +94,7 @@ fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> io::Result<
 
 fn spawn_result_displayer(result_receiver: Receiver<io::Result<(String, Counts)>>, done_sender: Sender<()>, options: &Options) {
     spawn({
-        let options= options.clone();
+        let options = options.clone();
         move || {
             result_receiver
                 .into_iter()
