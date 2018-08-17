@@ -10,105 +10,18 @@ use rayon::spawn;
 use glob::glob;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::io;
-use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Stdin};
+use std::io::{BufRead, stdin, stdout, stderr, Write};
 use std::path::Path;
 use std::fs::{File, metadata};
 
-#[derive(Debug)]
-struct Counts {
-    word_count: usize,
-    line_count: usize,
-    byte_count: usize,
-    char_count: usize,
-    is_a_directory: bool,
-}
+mod counts;
+mod options;
+mod reader;
 
-impl Counts {
-    fn new() -> Self {
-        Counts {
-            word_count: 0,
-            line_count: 0,
-            byte_count: 0,
-            char_count: 0,
-            is_a_directory: false,
-        }
-    }
+use counts::Counts;
+use options::Options;
+use reader::Reader;
 
-    fn display<'a>(&self, w: &'a mut Write, filename: &str, opt: &Options) -> io::Result<()> {
-        if self.is_a_directory && opt.show_dirs {
-            w.write_all(format!("dir {}\n", filename).as_bytes())?;
-            w.flush()?;
-            return Ok(());
-        }
-        let mut res = String::new();
-        let mut space_needed = false;
-        if opt.show_lines {
-            res.push_str(self.line_count.to_string().as_str());
-            space_needed = true;
-        }
-        if opt.show_words {
-            if space_needed {
-                res.push(' ');
-            }
-            res.push_str(self.word_count.to_string().as_str());
-            space_needed = true;
-        }
-        if opt.show_bytes {
-            if space_needed {
-                res.push(' ');
-            }
-            res.push_str(self.byte_count.to_string().as_str());
-            space_needed = true;
-        }
-        if opt.show_chars {
-            if space_needed {
-                res.push(' ');
-            }
-            res.push_str(self.char_count.to_string().as_str());
-            space_needed = true;
-        }
-        if filename != "-" {
-            if space_needed {
-                res.push(' ');
-            }
-            res.push_str(filename);
-        }
-        res.push('\n');
-        w.write_all(res.as_bytes())?;
-        w.flush()?;
-        Ok(())
-    }
-}
-
-enum Reader {
-    Stdin(Stdin),
-    File(File),
-}
-
-impl Reader {
-    fn get_buff_reader<'a>(&'a mut self) -> Box<BufRead + 'a> {
-        match self {
-            Reader::Stdin(s) => {
-                Box::new(s.lock())
-            }
-            Reader::File(f) => {
-                Box::new(BufReader::new(f))
-            }
-        }
-    }
-}
-
-impl From<File> for Reader {
-    fn from(f: File) -> Self {
-        Reader::File(f)
-    }
-}
-
-impl From<Stdin> for Reader {
-    fn from(s: Stdin) -> Self {
-        Reader::Stdin(s)
-    }
-}
 
 fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> io::Result<()> {
     let mut utf_reader = BufReadDecoder::new(r.get_buff_reader());
@@ -177,44 +90,6 @@ fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> io::Result<
         return read_as_bytes(reader, counts, opt);
     } else {
         return Ok(());
-    }
-}
-
-#[derive(Clone)]
-struct Options {
-    show_bytes: bool,
-    show_words: bool,
-    show_lines: bool,
-    show_chars: bool,
-    utf_required: bool,
-    show_dirs: bool,
-}
-
-impl Options {
-    fn new(show_bytes: bool, show_words: bool, show_lines: bool, show_chars: bool, show_dirs: bool) -> Self {
-        if !show_words && !show_lines && !show_bytes && !show_chars {
-            Options {
-                show_words: true,
-                show_bytes: true,
-                show_lines: true,
-                show_chars: false,
-                utf_required: true,
-                show_dirs,
-            }
-        } else {
-            Options {
-                show_words,
-                show_bytes,
-                show_lines,
-                show_chars,
-                utf_required: show_words || show_chars,
-                show_dirs,
-            }
-        }
-    }
-
-    fn anything_but_bytes(&self) -> bool {
-        self.show_lines || self.show_words
     }
 }
 
