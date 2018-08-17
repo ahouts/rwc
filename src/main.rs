@@ -200,7 +200,12 @@ fn main() {
             .short("d")
             .long("dirs"))
         .arg(Arg::with_name("files")
-            .help("FILES to read from. When a file is \"-\", read standard input.")
+            .help("FILES to read from. When a file is \"-\", read standard input. Supports \
+            bash style globbing.")
+            .long_help("FILES to read from. When a file is \"-\", read standard input. Supports \
+            bash style globbing (eg. **/*.js for all javascript files in current directory \
+            recursively). Surround globs in quotes to ensure your shell doesn't try to expand \
+            the glob.")
             .default_value("-")
             .index(1)
             .takes_value(true)
