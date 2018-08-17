@@ -13,6 +13,7 @@ use std::io;
 use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Stdin};
 use std::path::Path;
 use std::fs::File;
+use std::sync::{Mutex, Arc};
 
 #[derive(Debug)]
 struct Counts {
@@ -263,9 +264,13 @@ fn main() {
         .expect("error reading files")
         .collect();
     let (result_sender, result_receiver) = channel::<io::Result<(String, Counts)>>();
+    let done_mx = Arc::new(Mutex::new(0));
     spawn({
         let options= options.clone();
+        let done_mx = done_mx.clone();
         move || {
+            // lock the mutex until we are done
+            let _ = Arc::new(done_mx.lock().expect("hopefully nobody will ever see this"));
             result_receiver
                 .into_iter()
                 .for_each(|res| {
@@ -330,4 +335,6 @@ fn main() {
     // get rid of our sending channel
     // receive channel iterator ends once all senders go out of scope
     move || result_sender;
+    // wait for the receiver to finish
+    let _ = done_mx.lock().expect("the mutex has been poisoned! that's not good...");
 }
