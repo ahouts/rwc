@@ -12,7 +12,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::io;
 use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Stdin};
 use std::path::Path;
-use std::fs::File;
+use std::fs::{File, metadata};
 
 #[derive(Debug)]
 struct Counts {
@@ -116,9 +116,6 @@ fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> io::Result
     while let Some(s) = utf_reader.next_lossy() {
         let s: &str = s?;
         for c in s.chars() {
-            if opt.show_bytes {
-                counts.byte_count += c.len_utf8();
-            }
             counts.char_count += 1;
             if opt.show_lines && c == '\n' {
                 counts.line_count += 1;
@@ -153,7 +150,6 @@ fn read_as_bytes(mut r: Reader, counts: &mut Counts, cfg: &Options) -> io::Resul
                 }
             }
         }
-        counts.byte_count += bytes_read;
         reader.consume(bytes_read);
     }
     Ok(())
@@ -172,10 +168,15 @@ fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> io::Result<
             return Ok(());
         }
     };
-    if opt.utf_required {
+    if opt.show_bytes {
+        counts.byte_count = metadata(filename)?.len() as usize;
+    }
+    if opt.utf_required && opt.anything_but_bytes() {
         return read_as_utf8(reader, counts, opt);
-    } else {
+    } else if opt.anything_but_bytes() {
         return read_as_bytes(reader, counts, opt);
+    } else {
+        return Ok(());
     }
 }
 
@@ -210,6 +211,10 @@ impl Options {
                 show_dirs,
             }
         }
+    }
+
+    fn anything_but_bytes(&self) -> bool {
+        self.show_lines || self.show_words
     }
 }
 
