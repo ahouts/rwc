@@ -8,7 +8,7 @@ use clap::{Arg, App};
 use utf8::BufReadDecoder;
 use rayon::spawn;
 use glob::glob;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::io;
 use std::io::{BufRead, BufReader, stdin, stdout, stderr, Write, Stdin};
 use std::path::Path;
@@ -213,6 +213,84 @@ impl Options {
     }
 }
 
+fn spawn_result_displayer(result_receiver: Receiver<io::Result<(String, Counts)>>, done_sender: Sender<()>, options: &Options) {
+    spawn({
+        let options= options.clone();
+        move || {
+            result_receiver
+                .into_iter()
+                .for_each(|res| {
+                    let (filename, counts) = match res {
+                        Ok(r) => r,
+                        Err(e) => {
+                            writeln!(stderr(), "{}", e).expect("error writing error to stderr");
+                            stderr().flush().expect("error writing error to stderr");
+                            return;
+                        }
+                    };
+                    let sout = stdout();
+                    let mut sout_lock = sout.lock();
+                    if let Err(e) = counts.display(&mut sout_lock, filename.as_str(), &options) {
+                        writeln!(stderr(), "{}", e).expect("error writing error to stderr");
+                        stderr().flush().expect("error writing error to stderr");
+                        return;
+                    }
+                });
+            done_sender.send(()).expect("failed to send done status");
+        }
+    });
+}
+
+fn spawn_glob_processor(file_globs: Vec<&str>, filename_sender: Sender<String>) {
+    file_globs
+        .into_iter()
+        .for_each(|f| {
+            if f == "-" {
+                filename_sender.send(String::from(f)).expect("failed to send filename");
+                return;
+            }
+            let g = match glob(f) {
+                Err(e) => {
+                    writeln!(stderr(), "{}", e).expect("error writing error to stderr");
+                    stderr().flush().expect("error writing error to stderr");
+                    return;
+                }
+                Ok(g) => g,
+            };
+            let filename_sender = filename_sender.clone();
+            spawn(move || {
+                g.for_each(|entry| {
+                    match entry {
+                        Ok(path) => {
+                            filename_sender.send(String::from(path.to_str().expect("error reading path"))).expect("failed to send filename");
+                        }
+                        Err(e) => {
+                            writeln!(stderr(), "{}", e).expect("error writing error to stderr");
+                            stderr().flush().expect("error writing error to stderr");
+                        }
+                    }
+                });
+            });
+        });
+}
+
+fn spawn_file_processor(filename_receiver: Receiver<String>, result_sender: Sender<io::Result<(String, Counts)>>, options: &Options) {
+    filename_receiver
+        .into_iter()
+        .for_each(|file| {
+            let options = options.clone();
+            let result_sender = result_sender.clone();
+            spawn(move || {
+                let mut counts = Counts::new();
+                if let Err(e) = count_file(file.as_ref(), &mut counts, &options) {
+                    result_sender.send(Err(e)).expect("error sending result over channel");
+                } else {
+                    result_sender.send(Ok((file, counts))).expect("error sending result over channel");
+                }
+            });
+        });
+}
+
 fn main() {
     let matches = App::new("rwc")
         .version(crate_version!())
@@ -264,73 +342,12 @@ fn main() {
         .collect();
     let (result_sender, result_receiver) = channel::<io::Result<(String, Counts)>>();
     let (done_sender, done_receiver) = channel::<()>();
-    spawn({
-        let options= options.clone();
-        move || {
-            result_receiver
-                .into_iter()
-                .for_each(|res| {
-                    let (filename, counts) = match res {
-                        Ok(r) => r,
-                        Err(e) => {
-                            writeln!(stderr(), "{}", e).expect("error writing error to stderr");
-                            stderr().flush().expect("error writing error to stderr");
-                            return;
-                        }
-                    };
-                    let sout = stdout();
-                    let mut sout_lock = sout.lock();
-                    if let Err(e) = counts.display(&mut sout_lock, filename.as_str(), &options) {
-                        writeln!(stderr(), "{}", e).expect("error writing error to stderr");
-                        stderr().flush().expect("error writing error to stderr");
-                        return;
-                    }
-                });
-            done_sender.send(()).expect("failed to send done status");
-        }
-    });
-    file_globs
-        .into_iter()
-        .map(|f| -> Box<Iterator<Item=String> + Send> {
-            if f == "-" {
-                return Box::new(std::iter::once(String::from(f)));
-            }
-            let g = match glob(f) {
-                Err(e) => {
-                    writeln!(stderr(), "{}", e).expect("error writing error to stderr");
-                    stderr().flush().expect("error writing error to stderr");
-                    return Box::new(std::iter::empty());
-                }
-                Ok(g) => g,
-            };
-            Box::new(g.filter_map(|entry| -> Option<String> {
-                match entry {
-                    Ok(path) => {
-                        Some(String::from(path.to_str().expect("error reading path")))
-                    }
-                    Err(e) => {
-                        writeln!(stderr(), "{}", e).expect("error writing error to stderr");
-                        stderr().flush().expect("error writing error to stderr");
-                        None
-                    }
-                }
-            }))
-        })
-        .flat_map(|x| x)
-        .for_each(|file: String| {
-            let options = options.clone();
-            let result_sender = result_sender.clone();
-            spawn(move || {
-                let mut counts = Counts::new();
-                if let Err(e) = count_file(file.as_ref(), &mut counts, &options) {
-                    result_sender.send(Err(e)).expect("error sending result over channel");
-                } else {
-                    result_sender.send(Ok((file, counts))).expect("error sending result over channel");
-                }
-            });
-        });
-    // get rid of our sending channel
-    // receive channel iterator ends once all senders go out of scope
-    move || result_sender;
+    spawn_result_displayer(result_receiver, done_sender, &options);
+
+    let (filename_sender, filename_receiver) = channel::<String>();
+    spawn_glob_processor(file_globs, filename_sender);
+
+    spawn_file_processor(filename_receiver, result_sender, &options);
+
     done_receiver.recv().expect("failed to receive done status");
 }
