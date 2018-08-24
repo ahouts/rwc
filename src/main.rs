@@ -112,7 +112,7 @@ fn spawn_result_displayer(result_receiver: Receiver<io::Result<(String, Counts)>
                     if let Err(e) = counts.display(&mut sout_lock, filename.as_str(), &options) {
                         writeln!(stderr(), "{}", e).expect("error writing error to stderr");
                         stderr().flush().expect("error writing error to stderr");
-                        return;
+                        std::process::exit(-1);
                     }
                 });
             done_sender.send(()).expect("failed to send done status");
