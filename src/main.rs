@@ -4,7 +4,7 @@ extern crate utf8;
 extern crate rayon;
 extern crate glob;
 
-use clap::{Arg, App};
+use clap::{Arg, App, ArgMatches};
 use utf8::BufReadDecoder;
 use rayon::spawn;
 use glob::glob;
@@ -21,6 +21,60 @@ mod reader;
 use counts::Counts;
 use options::Options;
 use reader::Reader;
+
+fn get_matches<'a>() -> ArgMatches<'a> {
+    App::new("rwc")
+        .version(crate_version!())
+        .author("Andrew Houts <ahouts4@gmail.com>")
+        .about("print newline, word, and byte counts for each file.")
+        .long_about("print newline, word, and byte counts for each file.\n\nWhen no flags \
+        are set; lines, chars, and bytes will be selected by default. The results will \
+        be displayed in the following order:\n\n<line count> <word count> <byte count> <char count> \
+        <file>")
+        .arg(Arg::with_name("bytes")
+            .short("c")
+            .long("bytes")
+            .help("print the byte counts"))
+        .arg(Arg::with_name("chars")
+            .short("m")
+            .long("chars")
+            .help("print the character counts"))
+        .arg(Arg::with_name("lines")
+            .help("print the newline counts")
+            .short("l")
+            .long("lines"))
+        .arg(Arg::with_name("words")
+            .help("print the word counts")
+            .short("w")
+            .long("words"))
+        .arg(Arg::with_name("dirs")
+            .help("show directories in output")
+            .short("d")
+            .long("dirs"))
+        .arg(Arg::with_name("files")
+            .help("FILES to read from. When a file is \"-\", read standard input. Supports \
+            bash style globbing.")
+            .long_help("FILES to read from. When a file is \"-\", read standard input. Supports \
+            bash style globbing (eg. **/*.js for all javascript files in current directory \
+            recursively). Surround globs in quotes to ensure your shell doesn't try to expand \
+            the glob.")
+            .default_value("-")
+            .index(1)
+            .takes_value(true)
+            .multiple(true)
+            .long("FILE"))
+        .get_matches()
+}
+
+fn get_options(matches: &ArgMatches) -> Options {
+    Options::new(
+        matches.is_present("bytes"),
+        matches.is_present("words"),
+        matches.is_present("lines"),
+        matches.is_present("chars"),
+        matches.is_present("dirs"),
+    )
+}
 
 fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> io::Result<()> {
     let mut utf_reader = BufReadDecoder::new(r.get_buff_reader());
@@ -171,54 +225,8 @@ fn spawn_file_processor(filename_receiver: Receiver<String>, result_sender: Send
 }
 
 fn main() {
-    let matches = App::new("rwc")
-        .version(crate_version!())
-        .author("Andrew Houts <ahouts4@gmail.com>")
-        .about("print newline, word, and byte counts for each file.")
-        .long_about("print newline, word, and byte counts for each file.\n\nWhen no flags \
-        are set; lines, chars, and bytes will be selected by default. The results will \
-        be displayed in the following order:\n\n<line count> <word count> <byte count> <char count> \
-        <file>")
-        .arg(Arg::with_name("bytes")
-            .short("c")
-            .long("bytes")
-            .help("print the byte counts"))
-        .arg(Arg::with_name("chars")
-            .short("m")
-            .long("chars")
-            .help("print the character counts"))
-        .arg(Arg::with_name("lines")
-            .help("print the newline counts")
-            .short("l")
-            .long("lines"))
-        .arg(Arg::with_name("words")
-            .help("print the word counts")
-            .short("w")
-            .long("words"))
-        .arg(Arg::with_name("dirs")
-            .help("show directories in output")
-            .short("d")
-            .long("dirs"))
-        .arg(Arg::with_name("files")
-            .help("FILES to read from. When a file is \"-\", read standard input. Supports \
-            bash style globbing.")
-            .long_help("FILES to read from. When a file is \"-\", read standard input. Supports \
-            bash style globbing (eg. **/*.js for all javascript files in current directory \
-            recursively). Surround globs in quotes to ensure your shell doesn't try to expand \
-            the glob.")
-            .default_value("-")
-            .index(1)
-            .takes_value(true)
-            .multiple(true)
-            .long("FILE"))
-        .get_matches();
-    let options = Options::new(
-        matches.is_present("bytes"),
-        matches.is_present("words"),
-        matches.is_present("lines"),
-        matches.is_present("chars"),
-        matches.is_present("dirs"),
-    );
+    let matches = get_matches();
+    let options = get_options(&matches);
 
     let file_globs: Vec<&str> = matches
         .values_of("files")
