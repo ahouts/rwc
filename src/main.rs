@@ -22,48 +22,37 @@ use counts::Counts;
 use options::Options;
 use reader::Reader;
 
-fn get_matches<'a>() -> ArgMatches<'a> {
-    App::new("rwc")
-        .version(crate_version!())
-        .author("Andrew Houts <ahouts4@gmail.com>")
-        .about("print newline, word, and byte counts for each file.")
-        .long_about("print newline, word, and byte counts for each file.\n\nWhen no flags \
-        are set; lines, chars, and bytes will be selected by default. The results will \
-        be displayed in the following order:\n\n<line count> <word count> <byte count> <char count> \
-        <file>")
-        .arg(Arg::with_name("bytes")
-            .short("c")
-            .long("bytes")
-            .help("print the byte counts"))
-        .arg(Arg::with_name("chars")
-            .short("m")
-            .long("chars")
-            .help("print the character counts"))
-        .arg(Arg::with_name("lines")
-            .help("print the newline counts")
-            .short("l")
-            .long("lines"))
-        .arg(Arg::with_name("words")
-            .help("print the word counts")
-            .short("w")
-            .long("words"))
-        .arg(Arg::with_name("dirs")
-            .help("show directories in output")
-            .short("d")
-            .long("dirs"))
-        .arg(Arg::with_name("files")
-            .help("FILES to read from. When a file is \"-\", read standard input. Supports \
-            bash style globbing.")
-            .long_help("FILES to read from. When a file is \"-\", read standard input. Supports \
+fn make_app<'a, 'b>() -> App<'a, 'b> {
+    clap_app!(rwc =>
+        (author: "Andrew Houts <ahouts4@gmail.com>")
+        (about: "print newline, word, and byte counts for each file.")
+        (version: crate_version!())
+        (long_about:
+            "print newline, word, and byte counts for each file.\n\nWhen no flags \
+            are set; lines, chars, and bytes will be selected by default. The results will \
+            be displayed in the following order:\n\n<line count> <word count> <byte count> <char count> \
+            <file>"
+        )
+        (@arg bytes: -c --bytes "print the byte counts")
+        (@arg chars: -m --chars "print the character counts")
+        (@arg lines: -l --lines "print the newline counts")
+        (@arg words: -w --words "print the word counts")
+        (@arg dirs: -d --dirs "show directories in output")
+        (@arg files:
+            --FILE
+            +takes_value
+            +multiple
+            +required
+            index(1)
+            default_value("-")
+            long_help("FILES to read from. When a file is \"-\", read standard input. Supports \
             bash style globbing (eg. **/*.js for all javascript files in current directory \
             recursively). Surround globs in quotes to ensure your shell doesn't try to expand \
             the glob.")
-            .default_value("-")
-            .index(1)
-            .takes_value(true)
-            .multiple(true)
-            .long("FILE"))
-        .get_matches()
+            help("FILES to read from. When a file is \"-\", read standard input. Supports \
+            bash style globbing.")
+        )
+    )
 }
 
 fn get_options(matches: &ArgMatches) -> Options {
@@ -76,17 +65,19 @@ fn get_options(matches: &ArgMatches) -> Options {
     )
 }
 
-fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> io::Result<()> {
+fn read_as_utf8(mut r: Reader, counts: &mut Counts, cfg: &Options) -> io::Result<()> {
     let mut utf_reader = BufReadDecoder::new(r.get_buff_reader());
     let mut in_a_word = false;
+    counts.byte_count = 0;
     while let Some(s) = utf_reader.next_lossy() {
         let s: &str = s?;
         for c in s.chars() {
             counts.char_count += 1;
-            if opt.show_lines && c == '\n' {
+            counts.byte_count += c.len_utf8();
+            if cfg.show_lines && c == '\n' {
                 counts.line_count += 1;
             }
-            if opt.show_words {
+            if cfg.show_words {
                 let is_whitespace = c.is_ascii_whitespace();
                 if in_a_word && is_whitespace {
                     counts.word_count += 1;
@@ -100,11 +91,13 @@ fn read_as_utf8(mut r: Reader, counts: &mut Counts, opt: &Options) -> io::Result
 
 fn read_as_bytes(mut r: Reader, counts: &mut Counts, cfg: &Options) -> io::Result<()> {
     let mut reader = r.get_buff_reader();
+    counts.byte_count = 0;
     loop {
         let bytes_read;
         {
             let buf = reader.fill_buf()?;
             bytes_read = buf.len();
+            counts.byte_count += bytes_read;
             if bytes_read == 0 {
                 break;
             }
@@ -134,15 +127,16 @@ fn count_file(filename: &str, counts: &mut Counts, opt: &Options) -> io::Result<
             return Ok(());
         }
     };
-    if opt.show_bytes {
+    if opt.show_bytes && filename != "-" {
         counts.byte_count = metadata(filename)?.len() as usize;
     }
-    if opt.utf_required && opt.anything_but_bytes() {
-        return read_as_utf8(reader, counts, opt);
-    } else if opt.anything_but_bytes() {
-        return read_as_bytes(reader, counts, opt);
-    } else {
+    if opt.only_bytes() && filename != "-" {
         return Ok(());
+    }
+    if opt.utf_required {
+        return read_as_utf8(reader, counts, opt);
+    } else {
+        return read_as_bytes(reader, counts, opt);
     }
 }
 
@@ -225,7 +219,8 @@ fn spawn_file_processor(filename_receiver: Receiver<String>, result_sender: Send
 }
 
 fn main() {
-    let matches = get_matches();
+    let app = make_app();
+    let matches = app.get_matches();
     let options = get_options(&matches);
 
     let file_globs: Vec<&str> = matches

@@ -32,7 +32,7 @@ impl Options {
         }
     }
 
-    pub fn anything_but_bytes(&self) -> bool {
-        self.show_lines || self.show_words
+    pub fn only_bytes(&self) -> bool {
+        self.show_bytes && !(self.show_lines || self.show_words)
     }
 }
