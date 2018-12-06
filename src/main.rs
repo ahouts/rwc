@@ -4,7 +4,7 @@ extern crate utf8;
 extern crate rayon;
 extern crate glob;
 
-use clap::{Arg, App, ArgMatches};
+use clap::{App, ArgMatches};
 use utf8::BufReadDecoder;
 use rayon::spawn;
 use glob::glob;
